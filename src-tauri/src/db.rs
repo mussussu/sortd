@@ -75,6 +75,11 @@ impl Database {
                     status TEXT NOT NULL,
                     timestamp TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 ",
             )
             .map_err(|e| format!("Failed to initialize tables: {e}"))
@@ -173,6 +178,43 @@ impl Database {
             .map_err(|e| format!("Failed to add rule: {e}"))?;
 
         Ok(())
+    }
+
+    pub fn save_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| format!("Failed to save setting '{key}': {e}"))?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        match self.conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Failed to get setting '{key}': {e}")),
+        }
+    }
+
+    pub fn get_watched_folders(&self) -> Result<Vec<String>, String> {
+        match self.get_setting("watched_folders")? {
+            None => Ok(vec![]),
+            Some(json) => serde_json::from_str::<Vec<String>>(&json)
+                .map_err(|e| format!("Failed to parse watched_folders: {e}")),
+        }
+    }
+
+    pub fn save_watched_folders(&self, folders: &[String]) -> Result<(), String> {
+        let json = serde_json::to_string(folders)
+            .map_err(|e| format!("Failed to serialize watched_folders: {e}"))?;
+        self.save_setting("watched_folders", &json)
     }
 
     pub fn get_history(&self, limit: usize) -> Result<Vec<FileEvent>, String> {

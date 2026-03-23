@@ -40,6 +40,17 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ── Watched-folders command ───────────────────────────────────────────────────
+
+#[tauri::command]
+async fn get_watched_folders(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| format!("DB lock poisoned: {e}"))?;
+    db.get_watched_folders()
+}
+
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -48,6 +59,15 @@ async fn start_watching(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Persist before starting so the list is saved even if the watcher fails.
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|e| format!("DB lock poisoned: {e}"))?;
+        db.save_watched_folders(&folders)?;
+    }
+
     let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
 
     let new_watcher = watcher::start_watcher(folders, tx)?;
@@ -253,16 +273,27 @@ pub fn run() {
                 .expect("Cannot resolve app data directory");
 
             let db = Database::new(&app_data_dir).expect("Failed to initialise database");
+            let saved_folders = db.get_watched_folders().unwrap_or_default();
 
             app.manage(AppState {
                 db: Arc::new(Mutex::new(db)),
                 watcher: Mutex::new(None),
             });
 
+            // Resume watching folders from the previous session
+            if !saved_folders.is_empty() {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    let _ = start_watching(saved_folders, app_handle.clone(), state).await;
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_watching,
+            get_watched_folders,
             get_staging_queue,
             approve_staging_item,
             reject_staging_item,

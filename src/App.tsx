@@ -51,7 +51,7 @@ function formatTimestamp(ts: string): string {
 
 // ── Queue tab ──────────────────────────────────────────────────────────────
 
-function QueueTab() {
+function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
   const [items, setItems] = useState<StagingItem[]>([]);
   const [busy, setBusy] = useState<Set<string>>(new Set());
 
@@ -85,6 +85,7 @@ function QueueTab() {
     try {
       await invoke("approve_staging_item", { id });
       setItems((prev) => prev.filter((i) => i.id !== id));
+      onHistoryChange();
     } finally {
       setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
     }
@@ -95,6 +96,7 @@ function QueueTab() {
     try {
       await invoke("reject_staging_item", { id, newDest: null });
       setItems((prev) => prev.filter((i) => i.id !== id));
+      onHistoryChange();
     } finally {
       setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
     }
@@ -144,21 +146,20 @@ function QueueTab() {
 
 // ── History tab ────────────────────────────────────────────────────────────
 
-function HistoryTab() {
-  const [events, setEvents] = useState<FileEvent[]>([]);
+function HistoryTab({
+  events,
+  loadHistory,
+}: {
+  events: FileEvent[];
+  loadHistory: () => void;
+}) {
   const [undoing, setUndoing] = useState(false);
-
-  useEffect(() => {
-    invoke<FileEvent[]>("get_history").then(setEvents).catch(() => {});
-  }, []);
 
   async function undo() {
     setUndoing(true);
     try {
       await invoke("undo_last_move");
-      // Refresh history after undo
-      const updated = await invoke<FileEvent[]>("get_history");
-      setEvents(updated);
+      loadHistory();
     } finally {
       setUndoing(false);
     }
@@ -203,6 +204,11 @@ function SettingsTab() {
   const [watchedFolders, setWatchedFolders] = useState<string[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>("checking");
   const [adding, setAdding] = useState(false);
+
+  // Load persisted folders on mount
+  useEffect(() => {
+    invoke<string[]>("get_watched_folders").then(setWatchedFolders).catch(() => {});
+  }, []);
 
   // Check Ollama reachability
   useEffect(() => {
@@ -286,6 +292,28 @@ function SettingsTab() {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("queue");
+  const [history, setHistory] = useState<FileEvent[]>([]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const raw = await invoke<FileEvent[]>("get_history");
+      // Deduplicate by id in case the backend returns repeated entries
+      const seen = new Set<string>();
+      const unique = raw.filter((ev) => {
+        if (seen.has(ev.id)) return false;
+        seen.add(ev.id);
+        return true;
+      });
+      setHistory(unique);
+    } catch {
+      // backend not ready yet
+    }
+  }, []);
+
+  // Load history on mount and whenever the history tab is opened
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
 
   return (
     <div className="app">
@@ -295,7 +323,10 @@ export default function App() {
           <button
             key={t}
             className={`tab-btn ${tab === t ? "active" : ""}`}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              if (t === "history") loadHistory();
+            }}
           >
             {t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
@@ -303,8 +334,8 @@ export default function App() {
       </header>
 
       <div className="tab-content">
-        {tab === "queue"    && <QueueTab />}
-        {tab === "history"  && <HistoryTab />}
+        {tab === "queue"    && <QueueTab onHistoryChange={loadHistory} />}
+        {tab === "history"  && <HistoryTab events={history} loadHistory={loadHistory} />}
         {tab === "settings" && <SettingsTab />}
       </div>
     </div>
