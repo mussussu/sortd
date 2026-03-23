@@ -175,6 +175,93 @@ impl Database {
         Ok(())
     }
 
+    pub fn get_history(&self, limit: usize) -> Result<Vec<FileEvent>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path, detected_category, confidence, action, timestamp
+                 FROM file_events
+                 ORDER BY timestamp DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| format!("Failed to prepare history query: {e}"))?;
+
+        let events = stmt
+            .query_map([limit as i64], |row| {
+                Ok(FileEvent {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    detected_category: row.get(2)?,
+                    confidence: row.get(3)?,
+                    action: row.get(4)?,
+                    timestamp: row.get(5)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query history: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect history: {e}"))?;
+
+        Ok(events)
+    }
+
+    pub fn get_staging_item(&self, id: &str) -> Result<StagingItem, String> {
+        self.conn
+            .query_row(
+                "SELECT id, file_path, proposed_dest, confidence, status, timestamp
+                 FROM staging_queue WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(StagingItem {
+                        id: row.get(0)?,
+                        file_path: row.get(1)?,
+                        proposed_dest: row.get(2)?,
+                        confidence: row.get(3)?,
+                        status: row.get(4)?,
+                        timestamp: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| format!("Staging item '{id}' not found: {e}"))
+    }
+
+    pub fn get_last_auto_move(&self) -> Result<FileEvent, String> {
+        self.conn
+            .query_row(
+                "SELECT id, path, detected_category, confidence, action, timestamp
+                 FROM file_events
+                 WHERE action LIKE 'auto-moved to%'
+                 ORDER BY timestamp DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok(FileEvent {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        detected_category: row.get(2)?,
+                        confidence: row.get(3)?,
+                        action: row.get(4)?,
+                        timestamp: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| format!("No auto-moved file found: {e}"))
+    }
+
+    pub fn update_event_action(&self, id: &str, action: &str) -> Result<(), String> {
+        let rows = self
+            .conn
+            .execute(
+                "UPDATE file_events SET action = ?1 WHERE id = ?2",
+                params![action, id],
+            )
+            .map_err(|e| format!("Failed to update event action: {e}"))?;
+
+        if rows == 0 {
+            return Err(format!("No file_event found with id: {id}"));
+        }
+        Ok(())
+    }
+
     pub fn get_rules(&self) -> Result<Vec<Rule>, String> {
         let mut stmt = self.conn
             .prepare("SELECT pattern, category, hits FROM rules_cache ORDER BY hits DESC")
