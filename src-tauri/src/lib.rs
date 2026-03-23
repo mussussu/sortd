@@ -230,6 +230,18 @@ async fn reject_staging_item(
     Ok(())
 }
 
+// ── Folder picker ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn browse_for_folder() -> Result<Option<String>, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title("Select destination folder")
+        .pick_folder()
+        .await;
+
+    Ok(handle.map(|f| f.path().to_string_lossy().into_owned()))
+}
+
 // ── History commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -309,6 +321,7 @@ pub fn run() {
             reject_staging_item,
             get_history,
             undo_last_move,
+            browse_for_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

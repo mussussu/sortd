@@ -167,6 +167,16 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
                   }}
                 />
                 <button
+                  className="btn btn-browse"
+                  disabled={isbusy}
+                  onClick={async () => {
+                    const picked = await invoke<string | null>("browse_for_folder");
+                    if (picked) setRejectDest(picked);
+                  }}
+                >
+                  Browse
+                </button>
+                <button
                   className="btn btn-reject"
                   disabled={isbusy}
                   onClick={() => confirmReject(item.id)}

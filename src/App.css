@@ -178,6 +178,13 @@ html, body, #root {
 }
 .btn-reject:hover:not(:disabled) { background: #3a1414; }
 
+.btn-browse {
+  border-color: var(--border);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.btn-browse:hover:not(:disabled) { background: #222228; color: var(--text); }
+
 .btn-undo {
   border-color: #2a3a5a;
   color: var(--accent);
