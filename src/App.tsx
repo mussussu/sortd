@@ -1,51 +1,312 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+// ── Types ──────────────────────────────────────────────────────────────────
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+interface StagingItem {
+  id: string;
+  file_path: string;
+  proposed_dest: string;
+  confidence: number;
+  status: string;
+  timestamp: string;
+}
+
+interface FileEvent {
+  id: string;
+  path: string;
+  detected_category: string;
+  confidence: number;
+  action: string;
+  timestamp: string;
+}
+
+type Tab = "queue" | "history" | "settings";
+type OllamaStatus = "checking" | "online" | "offline";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function fileName(path: string): string {
+  return path.replace(/\\/g, "/").split("/").pop() ?? path;
+}
+
+function confidenceClass(c: number): "high" | "medium" | "low" {
+  if (c > 0.9) return "high";
+  if (c >= 0.7) return "medium";
+  return "low";
+}
+
+function formatTimestamp(ts: string): string {
+  try {
+    return new Date(ts).toLocaleString(undefined, {
+      month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch {
+    return ts;
+  }
+}
+
+// ── Queue tab ──────────────────────────────────────────────────────────────
+
+function QueueTab() {
+  const [items, setItems] = useState<StagingItem[]>([]);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+
+  const refresh = useCallback(async () => {
+    try {
+      const queue = await invoke<StagingItem[]>("get_staging_queue");
+      setItems(queue);
+    } catch {
+      // backend not ready yet — silently ignore
+    }
+  }, []);
+
+  // Initial load + polling every 5 s
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  // Refresh immediately when backend emits a new file
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>("file-staged", () => refresh()).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [refresh]);
+
+  async function approve(id: string) {
+    setBusy((s) => new Set(s).add(id));
+    try {
+      await invoke("approve_staging_item", { id });
+      setItems((prev) => prev.filter((i) => i.id !== id));
+    } finally {
+      setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
+    }
+  }
+
+  async function reject(id: string) {
+    setBusy((s) => new Set(s).add(id));
+    try {
+      await invoke("reject_staging_item", { id, newDest: null });
+      setItems((prev) => prev.filter((i) => i.id !== id));
+    } finally {
+      setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
+    }
+  }
+
+  if (items.length === 0) {
+    return <p className="empty-state">No pending files</p>;
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <ul className="card-list" style={{ listStyle: "none" }}>
+      {items.map((item) => {
+        const cls = confidenceClass(item.confidence);
+        const pct = Math.round(item.confidence * 100);
+        const isbusy = busy.has(item.id);
+        return (
+          <li key={item.id} className="file-card">
+            <div className="card-header">
+              <span className="file-name">{fileName(item.file_path)}</span>
+              <span className={`confidence-badge ${cls}`}>{pct}%</span>
+            </div>
+            <div className="card-dest">
+              → <span>{item.proposed_dest}</span>
+            </div>
+            <div className="card-actions">
+              <button
+                className="btn btn-approve"
+                disabled={isbusy}
+                onClick={() => approve(item.id)}
+              >
+                Approve
+              </button>
+              <button
+                className="btn btn-reject"
+                disabled={isbusy}
+                onClick={() => reject(item.id)}
+              >
+                Reject
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
-export default App;
+// ── History tab ────────────────────────────────────────────────────────────
+
+function HistoryTab() {
+  const [events, setEvents] = useState<FileEvent[]>([]);
+  const [undoing, setUndoing] = useState(false);
+
+  useEffect(() => {
+    invoke<FileEvent[]>("get_history").then(setEvents).catch(() => {});
+  }, []);
+
+  async function undo() {
+    setUndoing(true);
+    try {
+      await invoke("undo_last_move");
+      // Refresh history after undo
+      const updated = await invoke<FileEvent[]>("get_history");
+      setEvents(updated);
+    } finally {
+      setUndoing(false);
+    }
+  }
+
+  if (events.length === 0) {
+    return <p className="empty-state">No history yet</p>;
+  }
+
+  return (
+    <ul className="history-list" style={{ listStyle: "none" }}>
+      {events.map((ev, idx) => (
+        <li key={ev.id} className="history-row">
+          <div className="history-meta">
+            <div className="history-filename">{fileName(ev.path)}</div>
+            <div className="history-detail">
+              <span className="cat">{ev.detected_category}</span>
+              {" · "}
+              {ev.action}
+            </div>
+            <div className="history-time">{formatTimestamp(ev.timestamp)}</div>
+          </div>
+          {idx === 0 && ev.action.startsWith("auto-moved") && (
+            <button
+              className="btn btn-undo"
+              disabled={undoing}
+              onClick={undo}
+            >
+              Undo
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ── Settings tab ───────────────────────────────────────────────────────────
+
+function SettingsTab() {
+  const [folderInput, setFolderInput] = useState("");
+  const [watchedFolders, setWatchedFolders] = useState<string[]>([]);
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>("checking");
+  const [adding, setAdding] = useState(false);
+
+  // Check Ollama reachability
+  useEffect(() => {
+    async function check() {
+      try {
+        const res = await fetch("http://localhost:11434/api/tags", {
+          signal: AbortSignal.timeout(3000),
+        });
+        setOllamaStatus(res.ok ? "online" : "offline");
+      } catch {
+        setOllamaStatus("offline");
+      }
+    }
+    check();
+    const id = setInterval(check, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function addFolder() {
+    const path = folderInput.trim();
+    if (!path) return;
+    setAdding(true);
+    try {
+      await invoke("start_watching", { folders: [path] });
+      setWatchedFolders((prev) =>
+        prev.includes(path) ? prev : [...prev, path]
+      );
+      setFolderInput("");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  const ollamaLabel =
+    ollamaStatus === "checking" ? "Checking…"
+    : ollamaStatus === "online"  ? "Ollama reachable (localhost:11434)"
+    :                              "Ollama unreachable — AI classification unavailable";
+
+  return (
+    <>
+      <div className="settings-section">
+        <div className="settings-label">Watch folders</div>
+        <div className="add-folder-row">
+          <input
+            className="path-input"
+            type="text"
+            placeholder="/path/to/folder"
+            value={folderInput}
+            onChange={(e) => setFolderInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addFolder()}
+          />
+          <button
+            className="btn btn-primary"
+            disabled={adding || folderInput.trim() === ""}
+            onClick={addFolder}
+          >
+            Add Folder
+          </button>
+        </div>
+        {watchedFolders.length > 0 && (
+          <ul className="folder-list" style={{ listStyle: "none" }}>
+            {watchedFolders.map((f) => (
+              <li key={f} className="folder-item">{f}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="settings-section">
+        <div className="settings-label">AI status</div>
+        <div className="status-row">
+          <span className={`status-dot ${ollamaStatus}`} />
+          <span className="status-text">{ollamaLabel}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("queue");
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <span className="app-title">sortd</span>
+        {(["queue", "history", "settings"] as Tab[]).map((t) => (
+          <button
+            key={t}
+            className={`tab-btn ${tab === t ? "active" : ""}`}
+            onClick={() => setTab(t)}
+          >
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </header>
+
+      <div className="tab-content">
+        {tab === "queue"    && <QueueTab />}
+        {tab === "history"  && <HistoryTab />}
+        {tab === "settings" && <SettingsTab />}
+      </div>
+    </div>
+  );
+}
