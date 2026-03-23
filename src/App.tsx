@@ -54,6 +54,9 @@ function formatTimestamp(ts: string): string {
 function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
   const [items, setItems] = useState<StagingItem[]>([]);
   const [busy, setBusy] = useState<Set<string>>(new Set());
+  // id of the card currently showing the reject form, plus its destination input
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectDest, setRejectDest] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -64,14 +67,12 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
     }
   }, []);
 
-  // Initial load + polling every 5 s
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
   }, [refresh]);
 
-  // Refresh immediately when backend emits a new file
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<string>("file-staged", () => refresh()).then((fn) => {
@@ -91,11 +92,24 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
     }
   }
 
-  async function reject(id: string) {
+  function openRejectForm(id: string) {
+    setRejectingId(id);
+    setRejectDest("");
+  }
+
+  function cancelReject() {
+    setRejectingId(null);
+    setRejectDest("");
+  }
+
+  async function confirmReject(id: string) {
     setBusy((s) => new Set(s).add(id));
     try {
-      await invoke("reject_staging_item", { id, newDest: null });
+      const newDest = rejectDest.trim() || null;
+      await invoke("reject_staging_item", { id, newDest });
       setItems((prev) => prev.filter((i) => i.id !== id));
+      setRejectingId(null);
+      setRejectDest("");
       onHistoryChange();
     } finally {
       setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
@@ -112,6 +126,7 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
         const cls = confidenceClass(item.confidence);
         const pct = Math.round(item.confidence * 100);
         const isbusy = busy.has(item.id);
+        const isRejecting = rejectingId === item.id;
         return (
           <li key={item.id} className="file-card">
             <div className="card-header">
@@ -124,7 +139,7 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
             <div className="card-actions">
               <button
                 className="btn btn-approve"
-                disabled={isbusy}
+                disabled={isbusy || isRejecting}
                 onClick={() => approve(item.id)}
               >
                 Approve
@@ -132,11 +147,34 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
               <button
                 className="btn btn-reject"
                 disabled={isbusy}
-                onClick={() => reject(item.id)}
+                onClick={() => isRejecting ? cancelReject() : openRejectForm(item.id)}
               >
-                Reject
+                {isRejecting ? "Cancel" : "Reject"}
               </button>
             </div>
+            {isRejecting && (
+              <div className="reject-form">
+                <input
+                  className="path-input"
+                  type="text"
+                  placeholder="Where should this go? (e.g. Documents/TextFiles)"
+                  value={rejectDest}
+                  autoFocus
+                  onChange={(e) => setRejectDest(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") confirmReject(item.id);
+                    if (e.key === "Escape") cancelReject();
+                  }}
+                />
+                <button
+                  className="btn btn-reject"
+                  disabled={isbusy}
+                  onClick={() => confirmReject(item.id)}
+                >
+                  Confirm Reject
+                </button>
+              </div>
+            )}
           </li>
         );
       })}

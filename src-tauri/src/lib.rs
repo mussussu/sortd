@@ -204,16 +204,26 @@ async fn reject_staging_item(
         .map_err(|e| format!("DB lock poisoned: {e}"))?;
     db.update_staging_status(&id, "rejected")?;
 
+    // Derive the category from the top-level folder of the proposed destination
+    let category = PathBuf::from(&item.proposed_dest)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("Other")
+        .to_string();
+
+    let _ = db.log_event(&item.file_path, &category, item.confidence, "rejected");
+
     if let Some(dest) = new_dest {
         let from = PathBuf::from(&item.file_path);
         if let Some(ext) = from.extension().and_then(|e| e.to_str()) {
-            let category = PathBuf::from(&dest)
+            let correction_category = PathBuf::from(&dest)
                 .parent()
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
                 .unwrap_or("Other")
                 .to_string();
-            let _ = db.add_rule(&format!("*.{ext}"), &category);
+            let _ = db.add_rule(&format!("*.{ext}"), &correction_category);
         }
     }
 

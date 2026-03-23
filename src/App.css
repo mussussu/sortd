@@ -192,6 +192,22 @@ html, body, #root {
 }
 .btn-primary:hover:not(:disabled) { background: #1a2540; }
 
+/* ── Reject form ─────────────────────────────────────────────────────────── */
+.reject-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.reject-form .path-input {
+  flex: 1;
+  font-size: 11px;
+  padding: 5px 10px;
+}
+
 /* ── History tab ──────────────────────────────────────────────────────────── */
 .history-list {
   display: flex;
