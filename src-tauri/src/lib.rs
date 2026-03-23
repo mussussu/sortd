@@ -17,13 +17,74 @@ pub struct AppState {
     pub watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
+// ── Path safety helpers ───────────────────────────────────────────────────────
+
+/// Sanitize a folder path that may come from untrusted AI output.
+/// Keeps only `Normal` path components (drops `..`, absolute roots, drive
+/// prefixes) and rejects any segment containing characters outside
+/// `[A-Za-z0-9 _-]`.  Falls back to `"Other"` if nothing survives.
+fn sanitize_folder_path(folder: &str) -> String {
+    use std::path::Component;
+    let segments: Vec<String> = Path::new(folder)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => {
+                let s = s.to_string_lossy();
+                if !s.is_empty()
+                    && !s.starts_with('.')
+                    && s.chars().all(|ch| ch.is_alphanumeric() || " _-".contains(ch))
+                {
+                    Some(s.into_owned())
+                } else {
+                    None
+                }
+            }
+            // Silently drop .., /, C:\, etc.
+            _ => None,
+        })
+        .collect();
+    if segments.is_empty() {
+        "Other".to_string()
+    } else {
+        segments.join("/")
+    }
+}
+
+/// If `path` already exists, find a non-conflicting name by appending (1), (2), …
+/// e.g. document.pdf → document(1).pdf → document(2).pdf
+fn unique_dest(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path.extension().and_then(|e| e.to_str());
+    let parent = path.parent().unwrap_or(Path::new("."));
+    for i in 1u32.. {
+        let name = match ext {
+            Some(e) => format!("{stem}({i}).{e}"),
+            None => format!("{stem}({i})"),
+        };
+        let candidate = parent.join(&name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path.to_path_buf() // unreachable in practice
+}
+
 // ── File-move helper ──────────────────────────────────────────────────────────
 
 /// Move a file from `from` to `to`.
-/// Creates the destination directory tree if needed.
-/// Tries `std::fs::rename` first (atomic on same filesystem);
-/// falls back to copy-then-delete for cross-device moves.
+/// - Errors if the source does not exist.
+/// - Creates the destination directory tree if needed.
+/// - Never overwrites an existing file; caller should pass a path from `unique_dest`.
+/// - Tries `std::fs::rename` first (atomic on same filesystem);
+///   falls back to copy-then-delete for cross-device moves.
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.exists() {
+        return Err(format!("Source file does not exist: {}", from.display()));
+    }
+
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create destination dir: {e}"))?;
@@ -104,9 +165,18 @@ async fn start_watching(
                 Some(n) => n.to_owned(),
                 None => continue,
             };
-            let dest_path = base_dir
-                .join(&classification.suggested_folder)
-                .join(&file_name);
+
+            // Sanitize the AI-supplied folder before joining — prevents path traversal.
+            let safe_folder = sanitize_folder_path(&classification.suggested_folder);
+            let raw_dest = base_dir.join(&safe_folder).join(&file_name);
+
+            // Final containment check: dest must remain under base_dir.
+            if !raw_dest.starts_with(&base_dir) {
+                continue;
+            }
+
+            // Avoid silently overwriting an existing file.
+            let dest_path = unique_dest(&raw_dest);
             let dest_str = dest_path.to_string_lossy().to_string();
 
             if classification.confidence > 0.90 {
@@ -161,7 +231,7 @@ async fn approve_staging_item(id: String, state: State<'_, AppState>) -> Result<
     };
 
     let from = PathBuf::from(&item.file_path);
-    let to = PathBuf::from(&item.proposed_dest);
+    let to = unique_dest(&PathBuf::from(&item.proposed_dest));
     move_file(&from, &to)?;
 
     let db = state

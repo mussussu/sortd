@@ -146,8 +146,12 @@ Respond with this exact JSON structure:
         .await
         .map_err(|e| format!("Failed to parse Ollama envelope: {e}"))?;
 
-    let result: ClassificationResult = serde_json::from_str(&ollama_resp.response)
+    let mut result: ClassificationResult = serde_json::from_str(&ollama_resp.response)
         .map_err(|e| format!("Failed to parse classification JSON: {e}"))?;
+
+    // Clamp confidence to a valid range — prevents prompt injection from
+    // returning 99.0 to force an auto-move or 0.0 to always suppress action.
+    result.confidence = result.confidence.clamp(0.0, 1.0);
 
     Ok(result)
 }
