@@ -27,6 +27,39 @@ struct ScanProgress {
 
 // ── Path safety helpers ───────────────────────────────────────────────────────
 
+/// Strip leading path components from an AI-suggested folder that would
+/// duplicate what `get_category_base_dir` already provides.
+///
+/// The AI frequently returns paths like "Documents/PDFs" or "Music/Rock"
+/// when the base dir is already `…\Documents\Sortd\PDFs` or `…\Music`.
+/// We strip any leading segment that is:
+///   - a generic container ("Documents", "Downloads"), or
+///   - equal to the category name (case-insensitive).
+///
+/// Stripping stops at the first segment that isn't redundant.
+///
+/// Examples:
+///   ("PDFs",        "Documents/PDFs")        → ""
+///   ("Documents",   "Documents/Reports")     → "Reports"
+///   ("Spreadsheets","Documents/Spreadsheets")→ ""
+///   ("Music",       "Music/Rock")            → "Rock"
+///   ("Images",      "Photos/Vacation")       → "Photos/Vacation"  (no strip)
+fn strip_redundant_prefix(category: &str, folder: &str) -> String {
+    let redundant = |seg: &str| -> bool {
+        let low = seg.to_lowercase();
+        low == "documents"
+            || low == "downloads"
+            || low == category.to_lowercase()
+    };
+
+    let segments: Vec<&str> = folder.split('/').collect();
+    let mut start = 0;
+    while start < segments.len() && redundant(segments[start]) {
+        start += 1;
+    }
+    segments[start..].join("/")
+}
+
 /// Sanitize a folder path that may come from untrusted AI output.
 /// Keeps only `Normal` path components (drops `..`, absolute roots, drive
 /// prefixes) and rejects any segment containing characters outside
@@ -170,10 +203,16 @@ async fn process_file(
     };
 
     // Route to the Windows standard folder for this category, then append
-    // the AI-suggested subfolder (sanitized against path traversal).
+    // the AI-suggested subfolder (sanitized against path traversal, and with
+    // any prefix that duplicates the category base stripped out).
     let base_dir = get_category_base_dir(&classification.category);
     let safe_folder = sanitize_folder_path(&classification.suggested_folder);
-    let raw_dest = base_dir.join(&safe_folder).join(&file_name);
+    let safe_folder = strip_redundant_prefix(&classification.category, &safe_folder);
+    let raw_dest = if safe_folder.is_empty() {
+        base_dir.join(&file_name)
+    } else {
+        base_dir.join(&safe_folder).join(&file_name)
+    };
 
     if !raw_dest.starts_with(&base_dir) {
         return;
