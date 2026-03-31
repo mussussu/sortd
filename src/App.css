@@ -317,6 +317,39 @@ html, body, #root {
   padding: 7px 12px;
 }
 
+/* ── Destination map ─────────────────────────────────────────────────────── */
+.dest-map {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dest-map-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.dest-cat {
+  width: 90px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.dest-arrow { color: var(--muted); flex-shrink: 0; }
+
+.dest-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ── Ollama status ────────────────────────────────────────────────────────── */
 .status-row {
   display: flex;

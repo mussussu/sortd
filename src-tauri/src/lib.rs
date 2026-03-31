@@ -120,13 +120,41 @@ async fn get_watched_folders(state: State<'_, AppState>) -> Result<Vec<String>, 
     db.get_watched_folders()
 }
 
+// ── Category → Windows standard folder mapping ────────────────────────────────
+
+/// Maps a classification category to the appropriate Windows standard folder.
+/// Falls back gracefully if the standard dir is unavailable.
+fn get_category_base_dir(category: &str) -> PathBuf {
+    let doc = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
+    let sortd = doc.join("Sortd");
+    let dl = dirs::download_dir().unwrap_or_else(|| sortd.clone());
+
+    match category {
+        "Images" | "Photos" => {
+            dirs::picture_dir().unwrap_or_else(|| sortd.clone())
+        }
+        "Videos" => {
+            dirs::video_dir().unwrap_or_else(|| sortd.clone())
+        }
+        "Music" | "Audio" => {
+            dirs::audio_dir().unwrap_or_else(|| sortd.clone())
+        }
+        "Documents" => sortd.clone(),
+        "PDFs" => sortd.join("PDFs"),
+        "Spreadsheets" => sortd.join("Spreadsheets"),
+        "Code" => sortd.join("Code"),
+        "Archives" => dl.join("Sortd").join("Archives"),
+        "Installers" => dl.join("Sortd").join("Installers"),
+        _ => sortd.join("Other"),
+    }
+}
+
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
 /// Classify one file and either auto-move it or add it to the staging queue.
 /// Shared by both the initial folder scan and the live watcher loop.
 async fn process_file(
     file_path: &Path,
-    base_dir: &Path,
     db_arc: &Arc<Mutex<Database>>,
     app: &AppHandle,
 ) {
@@ -141,10 +169,13 @@ async fn process_file(
         None => return,
     };
 
+    // Route to the Windows standard folder for this category, then append
+    // the AI-suggested subfolder (sanitized against path traversal).
+    let base_dir = get_category_base_dir(&classification.category);
     let safe_folder = sanitize_folder_path(&classification.suggested_folder);
     let raw_dest = base_dir.join(&safe_folder).join(&file_name);
 
-    if !raw_dest.starts_with(base_dir) {
+    if !raw_dest.starts_with(&base_dir) {
         return;
     }
 
@@ -190,12 +221,6 @@ async fn start_watching(
         db.save_watched_folders(&folders)?;
     }
 
-    let base_dir: PathBuf = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?
-        .join("Sorted");
-
     // Collect all pre-existing files now (fast directory walk, no I/O per file).
     // This list is processed in Phase 1 before the live watcher starts,
     // so there are no duplicate events.
@@ -221,7 +246,7 @@ async fn start_watching(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            process_file(&file_path, &base_dir, &db_arc, &app).await;
+            process_file(&file_path, &db_arc, &app).await;
             let _ = app.emit(
                 "scan-progress",
                 ScanProgress { current: idx + 1, total, current_file },
@@ -244,7 +269,7 @@ async fn start_watching(
         tokio::task::spawn_blocking(move || {
             let handle = tokio::runtime::Handle::current();
             for file_path in rx {
-                handle.block_on(process_file(&file_path, &base_dir, &db_arc2, &app));
+                handle.block_on(process_file(&file_path, &db_arc2, &app));
             }
         });
     });
@@ -355,6 +380,22 @@ async fn browse_for_folder() -> Result<Option<String>, String> {
     Ok(handle.map(|f| f.path().to_string_lossy().into_owned()))
 }
 
+// ── Open Sortd folder ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn open_sortd_folder() -> Result<(), String> {
+    let path = dirs::document_dir()
+        .ok_or("Cannot resolve Documents folder")?
+        .join("Sortd");
+    std::fs::create_dir_all(&path)
+        .map_err(|e| format!("Failed to create Sortd folder: {e}"))?;
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to open Explorer: {e}"))?;
+    Ok(())
+}
+
 // ── History commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -435,6 +476,7 @@ pub fn run() {
             get_history,
             undo_last_move,
             browse_for_folder,
+            open_sortd_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

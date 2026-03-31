@@ -381,6 +381,38 @@ function SettingsTab() {
         )}
       </div>
 
+      {/* Where files go */}
+      <div className="settings-section">
+        <div className="settings-label">Where your files go</div>
+        <ul className="dest-map" style={{ listStyle: "none" }}>
+          {[
+            ["Images",      "Pictures\\"],
+            ["Videos",      "Videos\\"],
+            ["Music",       "Music\\"],
+            ["Documents",   "Documents\\Sortd\\"],
+            ["PDFs",        "Documents\\Sortd\\PDFs\\"],
+            ["Spreadsheets","Documents\\Sortd\\Spreadsheets\\"],
+            ["Code",        "Documents\\Sortd\\Code\\"],
+            ["Archives",    "Downloads\\Sortd\\Archives\\"],
+            ["Installers",  "Downloads\\Sortd\\Installers\\"],
+            ["Other",       "Documents\\Sortd\\Other\\"],
+          ].map(([cat, dest]) => (
+            <li key={cat} className="dest-map-row">
+              <span className="dest-cat">{cat}</span>
+              <span className="dest-arrow">→</span>
+              <span className="dest-path">{dest}</span>
+            </li>
+          ))}
+        </ul>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 12 }}
+          onClick={() => invoke("open_sortd_folder")}
+        >
+          Open Sortd Folder
+        </button>
+      </div>
+
       <div className="settings-section">
         <div className="settings-label">AI status</div>
         <div className="status-row">
