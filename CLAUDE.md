@@ -71,3 +71,4 @@ if <70% notify user → store result in SQLite → learn from corrections
 - Always register new Tauri commands in main.rs or they won't be callable
 - SQLite must be opened with a connection pool, not per-call
 - notify watcher must run in its own thread, not blocking main
+- Sortd only watches and scans the ROOT level of watched folders (max_depth 1, NonRecursive). Never change this to recursive without explicit user request.

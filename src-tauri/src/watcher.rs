@@ -56,7 +56,7 @@ pub fn start_watcher(
     for folder in &folders {
         let folder_path = Path::new(folder);
         watcher
-            .watch(folder_path, RecursiveMode::Recursive)
+            .watch(folder_path, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch folder '{}': {e}", folder))?;
     }
 

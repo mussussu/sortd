@@ -228,6 +228,8 @@ async fn start_watching(
         .iter()
         .flat_map(|folder| {
             walkdir::WalkDir::new(folder)
+                .min_depth(1)
+                .max_depth(1)
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_type().is_file() && !watcher::is_temp_file(e.path()))
