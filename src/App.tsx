@@ -247,15 +247,46 @@ function HistoryTab({
 
 // ── Settings tab ───────────────────────────────────────────────────────────
 
+interface ScanProgress {
+  current: number;
+  total: number;
+  current_file: string;
+}
+
 function SettingsTab() {
   const [folderInput, setFolderInput] = useState("");
   const [watchedFolders, setWatchedFolders] = useState<string[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>("checking");
   const [adding, setAdding] = useState(false);
+  const [scan, setScan] = useState<ScanProgress | null>(null);
+  const [scanDone, setScanDone] = useState(false);
 
   // Load persisted folders on mount
   useEffect(() => {
     invoke<string[]>("get_watched_folders").then(setWatchedFolders).catch(() => {});
+  }, []);
+
+  // Listen for scan progress / completion events
+  useEffect(() => {
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenComplete: (() => void) | undefined;
+
+    listen<ScanProgress>("scan-progress", (e) => {
+      setScan(e.payload);
+      setScanDone(false);
+    }).then((fn) => { unlistenProgress = fn; });
+
+    listen<void>("scan-complete", () => {
+      setScan(null);
+      setScanDone(true);
+      // Auto-hide the "done" message after 4 s
+      setTimeout(() => setScanDone(false), 4000);
+    }).then((fn) => { unlistenComplete = fn; });
+
+    return () => {
+      unlistenProgress?.();
+      unlistenComplete?.();
+    };
   }, []);
 
   // Check Ollama reachability
@@ -279,6 +310,7 @@ function SettingsTab() {
     const path = folderInput.trim();
     if (!path) return;
     setAdding(true);
+    setScanDone(false);
     try {
       await invoke("start_watching", { folders: [path] });
       setWatchedFolders((prev) =>
@@ -294,6 +326,10 @@ function SettingsTab() {
     ollamaStatus === "checking" ? "Checking…"
     : ollamaStatus === "online"  ? "Ollama reachable (localhost:11434)"
     :                              "Ollama unreachable — AI classification unavailable";
+
+  const scanPct = scan && scan.total > 0
+    ? Math.round((scan.current / scan.total) * 100)
+    : 0;
 
   return (
     <>
@@ -322,6 +358,26 @@ function SettingsTab() {
               <li key={f} className="folder-item">{f}</li>
             ))}
           </ul>
+        )}
+
+        {/* Initial scan progress bar */}
+        {scan && (
+          <div className="scan-progress">
+            <div className="scan-label">
+              Scanning existing files… {scan.current}/{scan.total}
+            </div>
+            <div className="scan-bar-track">
+              <div className="scan-bar-fill" style={{ width: `${scanPct}%` }} />
+            </div>
+            <div className="scan-file">{scan.current_file}</div>
+          </div>
+        )}
+
+        {/* Completion toast */}
+        {scanDone && (
+          <div className="scan-toast">
+            Initial scan complete — check Queue and History.
+          </div>
         )}
       </div>
 

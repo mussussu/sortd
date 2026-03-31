@@ -14,7 +14,15 @@ pub struct AppState {
     /// Wrapped in Arc so the Arc can be cloned into background threads without
     /// going through State<'_> (whose lifetime can't escape the thread closure).
     pub db: Arc<Mutex<Database>>,
-    pub watcher: Mutex<Option<RecommendedWatcher>>,
+    /// Also Arc so it can be updated from inside a spawned async task.
+    pub watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ScanProgress {
+    current: usize,
+    total: usize,
+    current_file: String,
 }
 
 // ── Path safety helpers ───────────────────────────────────────────────────────
@@ -114,6 +122,59 @@ async fn get_watched_folders(state: State<'_, AppState>) -> Result<Vec<String>, 
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
+/// Classify one file and either auto-move it or add it to the staging queue.
+/// Shared by both the initial folder scan and the live watcher loop.
+async fn process_file(
+    file_path: &Path,
+    base_dir: &Path,
+    db_arc: &Arc<Mutex<Database>>,
+    app: &AppHandle,
+) {
+    let classification = match classifier::classify(file_path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let path_str = file_path.to_string_lossy().to_string();
+    let file_name = match file_path.file_name() {
+        Some(n) => n.to_owned(),
+        None => return,
+    };
+
+    let safe_folder = sanitize_folder_path(&classification.suggested_folder);
+    let raw_dest = base_dir.join(&safe_folder).join(&file_name);
+
+    if !raw_dest.starts_with(base_dir) {
+        return;
+    }
+
+    let dest_path = unique_dest(&raw_dest);
+    let dest_str = dest_path.to_string_lossy().to_string();
+
+    if classification.confidence > 0.90 {
+        if move_file(file_path, &dest_path).is_ok() {
+            if let Ok(guard) = db_arc.lock() {
+                let action = format!("auto-moved to {dest_str}");
+                let _ = guard.log_event(
+                    &path_str,
+                    &classification.category,
+                    classification.confidence,
+                    &action,
+                );
+            }
+        }
+    } else {
+        if let Ok(guard) = db_arc.lock() {
+            if guard
+                .add_to_staging(&path_str, &dest_str, classification.confidence)
+                .is_ok()
+            {
+                let _ = app.emit("file-staged", &path_str);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn start_watching(
     folders: Vec<String>,
@@ -129,81 +190,63 @@ async fn start_watching(
         db.save_watched_folders(&folders)?;
     }
 
-    let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
-
-    let new_watcher = watcher::start_watcher(folders, tx)?;
-
-    {
-        let mut w = state
-            .watcher
-            .lock()
-            .map_err(|e| format!("Watcher lock poisoned: {e}"))?;
-        *w = Some(new_watcher);
-    }
-
     let base_dir: PathBuf = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Cannot resolve app data dir: {e}"))?
         .join("Sorted");
 
-    // Clone the Arc so the background thread owns it independently of State<'_>.
+    // Collect all pre-existing files now (fast directory walk, no I/O per file).
+    // This list is processed in Phase 1 before the live watcher starts,
+    // so there are no duplicate events.
+    let existing_files: Vec<PathBuf> = folders
+        .iter()
+        .flat_map(|folder| {
+            walkdir::WalkDir::new(folder)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file() && !watcher::is_temp_file(e.path()))
+                .map(|e| e.into_path())
+        })
+        .collect();
+
     let db_arc = Arc::clone(&state.db);
+    let watcher_arc = Arc::clone(&state.watcher);
 
-    tokio::task::spawn_blocking(move || {
-        let handle = tokio::runtime::Handle::current();
-
-        for file_path in rx {
-            let classification =
-                match handle.block_on(classifier::classify(&file_path)) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-
-            let path_str = file_path.to_string_lossy().to_string();
-            let file_name = match file_path.file_name() {
-                Some(n) => n.to_owned(),
-                None => continue,
-            };
-
-            // Sanitize the AI-supplied folder before joining — prevents path traversal.
-            let safe_folder = sanitize_folder_path(&classification.suggested_folder);
-            let raw_dest = base_dir.join(&safe_folder).join(&file_name);
-
-            // Final containment check: dest must remain under base_dir.
-            if !raw_dest.starts_with(&base_dir) {
-                continue;
-            }
-
-            // Avoid silently overwriting an existing file.
-            let dest_path = unique_dest(&raw_dest);
-            let dest_str = dest_path.to_string_lossy().to_string();
-
-            if classification.confidence > 0.90 {
-                if move_file(&file_path, &dest_path).is_ok() {
-                    if let Ok(guard) = db_arc.lock() {
-                        let action = format!("auto-moved to {dest_str}");
-                        let _ = guard.log_event(
-                            &path_str,
-                            &classification.category,
-                            classification.confidence,
-                            &action,
-                        );
-                    }
-                }
-            } else {
-                // 0.70–0.90 → staging queue (user approves)
-                // <0.70     → also staging queue (low-confidence flag via confidence value)
-                if let Ok(guard) = db_arc.lock() {
-                    if guard
-                        .add_to_staging(&path_str, &dest_str, classification.confidence)
-                        .is_ok()
-                    {
-                        let _ = app.emit("file-staged", &path_str);
-                    }
-                }
-            }
+    tokio::spawn(async move {
+        // ── Phase 1: scan existing files ──────────────────────────────────────
+        let total = existing_files.len();
+        for (idx, file_path) in existing_files.into_iter().enumerate() {
+            let current_file = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            process_file(&file_path, &base_dir, &db_arc, &app).await;
+            let _ = app.emit(
+                "scan-progress",
+                ScanProgress { current: idx + 1, total, current_file },
+            );
         }
+        let _ = app.emit("scan-complete", ());
+
+        // ── Phase 2: start live watcher (after scan, no duplicate events) ─────
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        let new_watcher = match watcher::start_watcher(folders, tx) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
+        if let Ok(mut guard) = watcher_arc.lock() {
+            *guard = Some(new_watcher);
+        }
+
+        // ── Phase 3: live event loop ───────────────────────────────────────────
+        let db_arc2 = Arc::clone(&db_arc);
+        tokio::task::spawn_blocking(move || {
+            let handle = tokio::runtime::Handle::current();
+            for file_path in rx {
+                handle.block_on(process_file(&file_path, &base_dir, &db_arc2, &app));
+            }
+        });
     });
 
     Ok(())
@@ -369,7 +412,7 @@ pub fn run() {
 
             app.manage(AppState {
                 db: Arc::new(Mutex::new(db)),
-                watcher: Mutex::new(None),
+                watcher: Arc::new(Mutex::new(None)),
             });
 
             // Resume watching folders from the previous session
