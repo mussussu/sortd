@@ -108,11 +108,11 @@ function QueueTab({ onHistoryChange }: { onHistoryChange: () => void }) {
       const newDest = rejectDest.trim() || null;
       await invoke("reject_staging_item", { id, newDest });
       setItems((prev) => prev.filter((i) => i.id !== id));
-      setRejectingId(null);
-      setRejectDest("");
       onHistoryChange();
     } finally {
       setBusy((s) => { const n = new Set(s); n.delete(id); return n; });
+      setRejectingId(null);
+      setRejectDest("");
     }
   }
 

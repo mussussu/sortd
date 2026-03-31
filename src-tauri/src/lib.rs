@@ -340,8 +340,14 @@ async fn approve_staging_item(id: String, state: State<'_, AppState>) -> Result<
     };
 
     let from = PathBuf::from(&item.file_path);
-    let to = unique_dest(&PathBuf::from(&item.proposed_dest));
-    move_file(&from, &to)?;
+
+    // Only attempt the move if the file still exists. If the initial scan
+    // already auto-moved it (confidence > 0.90), the source will be gone —
+    // that's fine: we just mark the staging entry as approved and move on.
+    if from.exists() {
+        let to = unique_dest(&PathBuf::from(&item.proposed_dest));
+        move_file(&from, &to)?;
+    }
 
     let db = state
         .db
