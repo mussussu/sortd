@@ -289,6 +289,27 @@ impl Database {
             .map_err(|e| format!("No auto-moved file found: {e}"))
     }
 
+    pub fn get_file_event(&self, id: &str) -> Result<FileEvent, String> {
+        self.conn
+            .query_row(
+                "SELECT id, path, detected_category, confidence, action, timestamp
+                 FROM file_events
+                 WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(FileEvent {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        detected_category: row.get(2)?,
+                        confidence: row.get(3)?,
+                        action: row.get(4)?,
+                        timestamp: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| format!("File event '{id}' not found: {e}"))
+    }
+
     pub fn update_event_action(&self, id: &str, action: &str) -> Result<(), String> {
         let rows = self
             .conn

@@ -483,6 +483,35 @@ async fn undo_last_move(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn restore_file(id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let event = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|e| format!("DB lock poisoned: {e}"))?;
+        db.get_file_event(&id)?
+    };
+
+    // action format: "auto-moved to <dest>"
+    let dest_str = event
+        .action
+        .strip_prefix("auto-moved to ")
+        .ok_or("Event has unexpected action format (expected 'auto-moved to')")?;
+
+    let from = PathBuf::from(dest_str);
+    let to = PathBuf::from(&event.path);
+    move_file(&from, &to)?;
+
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| format!("DB lock poisoned: {e}"))?;
+    db.update_event_action(&id, "restored")?;
+
+    Ok(format!("Restored {} to {}", from.display(), to.display()))
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -522,6 +551,7 @@ pub fn run() {
             reject_staging_item,
             get_history,
             undo_last_move,
+            restore_file,
             browse_for_folder,
             open_sortd_folder,
         ])

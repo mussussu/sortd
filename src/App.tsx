@@ -201,46 +201,68 @@ function HistoryTab({
   events: FileEvent[];
   loadHistory: () => void;
 }) {
-  const [undoing, setUndoing] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [localEvents, setLocalEvents] = useState<FileEvent[]>([]);
 
-  async function undo() {
-    setUndoing(true);
+  // Sync props to local state whenever events change
+  useEffect(() => {
+    setLocalEvents(events);
+  }, [events]);
+
+  async function restore(id: string) {
+    setRestoringId(id);
     try {
-      await invoke("undo_last_move");
-      loadHistory();
+      await invoke("restore_file", { id });
+      // Update local state immediately - mark this event as restored
+      setLocalEvents((prev) =>
+        prev.map((ev) =>
+          ev.id === id ? { ...ev, action: "restored" } : ev
+        )
+      );
     } finally {
-      setUndoing(false);
+      setRestoringId(null);
     }
   }
 
-  if (events.length === 0) {
+  if (localEvents.length === 0) {
     return <p className="empty-state">No history yet</p>;
   }
 
   return (
     <ul className="history-list" style={{ listStyle: "none" }}>
-      {events.map((ev, idx) => (
-        <li key={ev.id} className="history-row">
-          <div className="history-meta">
-            <div className="history-filename">{fileName(ev.path)}</div>
-            <div className="history-detail">
-              <span className="cat">{ev.detected_category}</span>
-              {" · "}
-              {ev.action}
+      {localEvents.map((ev) => {
+        const isAutoMoved = ev.action.startsWith("auto-moved to");
+        const isRestored = ev.action === "undone" || ev.action === "restored";
+        const showRestoreButton = isAutoMoved && !isRestored;
+
+        return (
+          <li key={ev.id} className="history-row">
+            <div className="history-meta">
+              <div className="history-filename">{fileName(ev.path)}</div>
+              <div className="history-detail">
+                <span className="cat">{ev.detected_category}</span>
+                {" · "}
+                {ev.action}
+              </div>
+              <div className="history-time">{formatTimestamp(ev.timestamp)}</div>
             </div>
-            <div className="history-time">{formatTimestamp(ev.timestamp)}</div>
-          </div>
-          {idx === 0 && ev.action.startsWith("auto-moved") && (
-            <button
-              className="btn btn-undo"
-              disabled={undoing}
-              onClick={undo}
-            >
-              Undo
-            </button>
-          )}
-        </li>
-      ))}
+            {showRestoreButton && (
+              <button
+                className="btn btn-undo"
+                disabled={restoringId !== null}
+                onClick={() => restore(ev.id)}
+              >
+                Restore
+              </button>
+            )}
+            {isRestored && (
+              <span className="btn btn-undo" style={{ opacity: 0.5, cursor: "default" }}>
+                Restored
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
