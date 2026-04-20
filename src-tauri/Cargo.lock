@@ -4095,6 +4095,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "log",
  "notify",
  "reqwest 0.12.28",
  "rfd",

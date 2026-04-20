@@ -31,3 +31,4 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 rfd = "0.14"
 dirs = "5"
+log = "0.4"

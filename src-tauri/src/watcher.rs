@@ -1,6 +1,7 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use log::debug;
 
 pub struct WatcherState {
     pub watched_folders: Vec<String>,
@@ -24,6 +25,31 @@ pub fn is_temp_file(path: &Path) -> bool {
     )
 }
 
+/// Returns true if the path is inside a protected system directory.
+/// Protected directories: .git, node_modules, AppData, .cargo, .rustup
+/// Also protects "target" if it's inside a Rust project (parent contains Cargo.toml).
+pub fn is_protected_path(path: &Path) -> bool {
+    // Check all ancestor directories in the path
+    for ancestor in path.ancestors() {
+        if let Some(dir_name) = ancestor.file_name().and_then(|n| n.to_str()) {
+            match dir_name {
+                ".git" | "node_modules" | "AppData" | ".cargo" | ".rustup" => return true,
+                "target" => {
+                    // Check if this target directory's parent contains Cargo.toml
+                    if let Some(parent) = ancestor.parent() {
+                        if parent.join("Cargo.toml").exists() {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    false
+}
+
 /// Starts a file-system watcher for `folders`, sending newly created (non-temp)
 /// file paths through `tx`.  The watcher runs on a background thread.
 /// The caller must keep the returned `RecommendedWatcher` alive — dropping it
@@ -45,10 +71,21 @@ pub fn start_watcher(
         }
 
         for path in event.paths {
-            if path.is_file() && !is_temp_file(&path) {
-                // Ignore send errors — receiver may have been dropped on shutdown.
-                let _ = tx_inner.send(path);
+            if !path.is_file() {
+                continue;
             }
+
+            if is_temp_file(&path) {
+                continue;
+            }
+
+            if is_protected_path(&path) {
+                debug!("Skipping protected path: {}", path.display());
+                continue;
+            }
+
+            // Ignore send errors — receiver may have been dropped on shutdown.
+            let _ = tx_inner.send(path);
         }
     })
     .map_err(|e| format!("Failed to create watcher: {e}"))?;
