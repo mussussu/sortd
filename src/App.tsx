@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -282,10 +283,12 @@ function SettingsTab() {
   const [adding, setAdding] = useState(false);
   const [scan, setScan] = useState<ScanProgress | null>(null);
   const [scanDone, setScanDone] = useState(false);
+  const [destinationRoot, setDestinationRoot] = useState<string>("");
 
-  // Load persisted folders on mount
+  // Load persisted folders and destination root on mount
   useEffect(() => {
     invoke<string[]>("get_watched_folders").then(setWatchedFolders).catch(() => {});
+    invoke<string>("get_destination_root").then(setDestinationRoot).catch(() => {});
   }, []);
 
   // Listen for scan progress / completion events
@@ -341,6 +344,21 @@ function SettingsTab() {
       setFolderInput("");
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function changeDestinationRoot() {
+    const selected = await open({
+      directory: true,
+      title: "Select destination folder for sorted files",
+    });
+    if (selected) {
+      try {
+        await invoke("set_destination_root", { path: selected });
+        setDestinationRoot(selected);
+      } catch (error) {
+        console.error("Failed to set destination root:", error);
+      }
     }
   }
 
@@ -403,28 +421,45 @@ function SettingsTab() {
         )}
       </div>
 
+      {/* Destination folder */}
+      <div className="settings-section">
+        <div className="settings-label">Destination folder</div>
+        <div className="folder-item" style={{ marginBottom: 12 }}>
+          {destinationRoot || "Loading..."}
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={changeDestinationRoot}
+        >
+          Change Folder
+        </button>
+      </div>
+
       {/* Where files go */}
       <div className="settings-section">
         <div className="settings-label">Where your files go</div>
         <ul className="dest-map" style={{ listStyle: "none" }}>
           {[
-            ["Images",      "Pictures\\"],
-            ["Videos",      "Videos\\"],
-            ["Music",       "Music\\"],
-            ["Documents",   "Documents\\Sortd\\"],
-            ["PDFs",        "Documents\\Sortd\\PDFs\\"],
-            ["Spreadsheets","Documents\\Sortd\\Spreadsheets\\"],
-            ["Code",        "Documents\\Sortd\\Code\\"],
-            ["Archives",    "Downloads\\Sortd\\Archives\\"],
-            ["Installers",  "Downloads\\Sortd\\Installers\\"],
-            ["Other",       "Documents\\Sortd\\Other\\"],
-          ].map(([cat, dest]) => (
-            <li key={cat} className="dest-map-row">
-              <span className="dest-cat">{cat}</span>
-              <span className="dest-arrow">→</span>
-              <span className="dest-path">{dest}</span>
-            </li>
-          ))}
+            "Images",
+            "Videos",
+            "Music",
+            "Documents",
+            "PDFs",
+            "Spreadsheets",
+            "Code",
+            "Archives",
+            "Installers",
+            "Other",
+          ].map((cat) => {
+            const dest = destinationRoot ? `${destinationRoot}\\${cat}\\` : "Loading...";
+            return (
+              <li key={cat} className="dest-map-row">
+                <span className="dest-cat">{cat}</span>
+                <span className="dest-arrow">→</span>
+                <span className="dest-path">{dest}</span>
+              </li>
+            );
+          })}
         </ul>
         <button
           className="btn btn-primary"

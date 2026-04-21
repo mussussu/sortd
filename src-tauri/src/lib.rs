@@ -153,32 +153,22 @@ async fn get_watched_folders(state: State<'_, AppState>) -> Result<Vec<String>, 
     db.get_watched_folders()
 }
 
-// ── Category → Windows standard folder mapping ────────────────────────────────
+// ── Category → Destination folder mapping ─────────────────────────────────────
 
-/// Maps a classification category to the appropriate Windows standard folder.
-/// Falls back gracefully if the standard dir is unavailable.
-fn get_category_base_dir(category: &str) -> PathBuf {
-    let doc = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
-    let sortd = doc.join("Sortd");
-    let dl = dirs::download_dir().unwrap_or_else(|| sortd.clone());
-
+/// Maps a classification category to a subfolder under the configured root.
+/// All categories become subfolders under the root directory.
+fn get_category_base_dir(root: &Path, category: &str) -> PathBuf {
     match category {
-        "Images" | "Photos" => {
-            dirs::picture_dir().unwrap_or_else(|| sortd.clone())
-        }
-        "Videos" => {
-            dirs::video_dir().unwrap_or_else(|| sortd.clone())
-        }
-        "Music" | "Audio" => {
-            dirs::audio_dir().unwrap_or_else(|| sortd.clone())
-        }
-        "Documents" => sortd.clone(),
-        "PDFs" => sortd.join("PDFs"),
-        "Spreadsheets" => sortd.join("Spreadsheets"),
-        "Code" => sortd.join("Code"),
-        "Archives" => dl.join("Sortd").join("Archives"),
-        "Installers" => dl.join("Sortd").join("Installers"),
-        _ => sortd.join("Other"),
+        "Images" | "Photos" => root.join("Images"),
+        "Videos" => root.join("Videos"),
+        "Music" | "Audio" => root.join("Music"),
+        "Documents" => root.join("Documents"),
+        "PDFs" => root.join("PDFs"),
+        "Spreadsheets" => root.join("Spreadsheets"),
+        "Code" => root.join("Code"),
+        "Archives" => root.join("Archives"),
+        "Installers" => root.join("Installers"),
+        _ => root.join("Other"),
     }
 }
 
@@ -202,10 +192,21 @@ async fn process_file(
         None => return,
     };
 
-    // Route to the Windows standard folder for this category, then append
-    // the AI-suggested subfolder (sanitized against path traversal, and with
+    // Get the configured destination root, then route to the category subfolder.
+    // Append the AI-suggested subfolder (sanitized against path traversal, and with
     // any prefix that duplicates the category base stripped out).
-    let base_dir = get_category_base_dir(&classification.category);
+    let root = {
+        let db = match db_arc.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        match db.get_destination_root() {
+            Ok(path) => PathBuf::from(path),
+            Err(_) => return,
+        }
+    };
+
+    let base_dir = get_category_base_dir(&root, &classification.category);
     let safe_folder = sanitize_folder_path(&classification.suggested_folder);
     let safe_folder = strip_redundant_prefix(&classification.category, &safe_folder);
     let raw_dest = if safe_folder.is_empty() {
@@ -443,6 +444,26 @@ fn open_sortd_folder() -> Result<(), String> {
     Ok(())
 }
 
+// ── Destination root commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+async fn get_destination_root(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| format!("DB lock poisoned: {e}"))?;
+    db.get_destination_root()
+}
+
+#[tauri::command]
+async fn set_destination_root(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| format!("DB lock poisoned: {e}"))?;
+    db.set_destination_root(&path)
+}
+
 // ── History commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -518,6 +539,7 @@ async fn restore_file(id: String, state: State<'_, AppState>) -> Result<String, 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -554,6 +576,8 @@ pub fn run() {
             restore_file,
             browse_for_folder,
             open_sortd_folder,
+            get_destination_root,
+            set_destination_root,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

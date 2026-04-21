@@ -217,6 +217,25 @@ impl Database {
         self.save_setting("watched_folders", &json)
     }
 
+    pub fn get_destination_root(&self) -> Result<String, String> {
+        match self.get_setting("destination_root")? {
+            Some(path) => Ok(path),
+            None => {
+                // Default to home directory + "\Sortd"
+                let default = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("Sortd")
+                    .to_string_lossy()
+                    .to_string();
+                Ok(default)
+            }
+        }
+    }
+
+    pub fn set_destination_root(&self, path: &str) -> Result<(), String> {
+        self.save_setting("destination_root", path)
+    }
+
     pub fn get_history(&self, limit: usize) -> Result<Vec<FileEvent>, String> {
         let mut stmt = self
             .conn
